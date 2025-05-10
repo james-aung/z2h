@@ -12,6 +12,7 @@ class ModelConfig:
    learning_rate: float = 1e-3
    num_training_steps: int = 10000
    train_test_ratio: float = 0.9
+   eval_interval: int = 100
 
 class BaseTokenizer(ABC):
    @abstractmethod
@@ -104,8 +105,26 @@ class ModelTrainer:
       for step in range(self.config.num_training_steps):
          loss = self.train_step()
          self.losses.append(loss)
-         if step % 100 == 0:
-            print(f"step {step} loss {loss}")
+         
+         # Evaluate and print losses every eval_interval steps
+         if step % self.config.eval_interval == 0:
+            losses = self.estimate_loss()
+            print(f"step {step}: train loss {losses['train']:.4f}, test loss {losses['test']:.4f}")
+
+   @torch.no_grad()
+   def estimate_loss(self):
+      out = {}
+      self.model.eval()
+      for split in ['train', 'test']:
+         losses = torch.zeros(self.config.eval_interval)
+         for k in range(self.config.eval_interval):
+            X, Y = self.dataset.get_batch(split, self.config.block_size, self.config.batch_size)
+            logits, loss = self.model(X, Y)
+            losses[k] = loss.item()
+         out[split] = losses.mean()
+      self.model.train()
+      return out
+
 
 class TextGenerator:
     def __init__(self, model: BigramLanguageModel, tokenizer: BaseTokenizer):
