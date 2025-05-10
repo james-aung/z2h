@@ -13,6 +13,7 @@ class ModelConfig:
    num_training_steps: int = 10000
    train_test_ratio: float = 0.9
    eval_interval: int = 100
+   embed_size: int = 32
 
 class BaseTokenizer(ABC):
    @abstractmethod
@@ -61,12 +62,18 @@ class Dataset:
       return x, y
    
 class BigramLanguageModel(nn.Module):
-   def __init__(self, vocab_size):
+   def __init__(self, vocab_size, block_size, embed_size):
       super().__init__()
-      self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+      self.token_embedding_table = nn.Embedding(vocab_size, embed_size)
+      self.position_embedding_table == nn.Embedding(block_size, embed_size)
+      self.lm_head = nn.Linear(embed_size, vocab_size)
 
    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-      logits = self.token_embedding_table(idx)
+      B, T = idx.shape
+      token_embeddings = self.token_embedding_table(idx)
+      position_embeddings = self.position_embedding_table(torch.arange(T))
+      x = token_embeddings + position_embeddings
+      logits = self.lm_head(x)
       if targets is None:
          loss = None
       else:
@@ -140,7 +147,7 @@ class TextGenerator:
 def main():
     config = ModelConfig()
     dataset = Dataset('gpt/data/input.txt', config.train_test_ratio)
-    model = BigramLanguageModel(dataset.tokenizer.vocab_size)
+    model = BigramLanguageModel(dataset.tokenizer.vocab_size, config.block_size, config.embed_size)
     trainer = ModelTrainer(model, dataset, config)
     generator = TextGenerator(model, dataset.tokenizer)
 
