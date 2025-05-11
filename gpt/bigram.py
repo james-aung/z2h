@@ -14,6 +14,9 @@ class ModelConfig:
    train_test_ratio: float = 0.9
    eval_interval: int = 100
    embed_size: int = 32
+   num_layers: int = 3
+   num_heads: int = 4
+   dropout: float = 0.2
 
 class BaseTokenizer(ABC):
    @abstractmethod
@@ -62,12 +65,13 @@ class Dataset:
       return x, y
    
 class FeedForward(nn.Module):
-   def __init__(self, embed_size):
+   def __init__(self, embed_size, dropout):
       super().__init__()
       self.net = nn.Sequential(
          nn.Linear(embed_size, 4 * embed_size),
          nn.ReLU(),
          nn.Linear(4 * embed_size, embed_size),
+         nn.Dropout(dropout),
       )
 
    def forward(self, x):
@@ -103,30 +107,31 @@ class MultiHeadAttention(nn.Module):
       return out
 
 class Block(nn.Module):
-   def __init__(self, embed_size, block_size, num_heads):
+   def __init__(self, embed_size, block_size, num_heads, dropout):
       super().__init__()
       head_size = embed_size // num_heads
       self.sa = MultiHeadAttention(num_heads, head_size, embed_size, block_size)
-      self.ffwd = FeedForward(embed_size)
+      self.ffwd = FeedForward(embed_size, dropout)
       self.ln1 = nn.LayerNorm(embed_size)
       self.ln2 = nn.LayerNorm(embed_size)
+      self.dropout = nn.Dropout(dropout)
 
    def forward(self, x):
-      x = x + self.sa(self.ln1(x))
-      x = x + self.ffwd(self.ln2(x))
+      x = x + self.dropout(self.sa(self.ln1(x)))
+      x = x + self.dropout(self.ffwd(self.ln2(x)))
       return x
 
 class BigramLanguageModel(nn.Module):
-   def __init__(self, vocab_size, block_size, embed_size):
+   def __init__(self, vocab_size, block_size, embed_size, num_layers, num_heads, dropout):
       super().__init__()
       self.block_size = block_size
       self.token_embedding_table = nn.Embedding(vocab_size, embed_size)
       self.position_embedding_table = nn.Embedding(block_size, embed_size)
       self.blocks = nn.Sequential(
-         Block(num_heads=4, block_size=block_size, embed_size=embed_size),
-         Block(num_heads=4, block_size=block_size, embed_size=embed_size),
-         Block(num_heads=4, block_size=block_size, embed_size=embed_size),
+         *[Block(num_heads=num_heads, block_size=block_size, embed_size=embed_size, dropout=dropout) for _ in range(num_layers)],
+         nn.LayerNorm(embed_size),
       )
+      self.dropout = nn.Dropout(dropout)
       self.lm_head = nn.Linear(embed_size, vocab_size)
 
    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -134,6 +139,7 @@ class BigramLanguageModel(nn.Module):
       token_embeddings = self.token_embedding_table(idx)
       position_embeddings = self.position_embedding_table(torch.arange(T))
       x = token_embeddings + position_embeddings
+      x = self.dropout(x)  # Add dropout after embeddings
       for block in self.blocks:
          x = block(x)
       logits = self.lm_head(x)
@@ -211,7 +217,7 @@ class TextGenerator:
 def main():
     config = ModelConfig()
     dataset = Dataset('gpt/data/input.txt', config.train_test_ratio)
-    model = BigramLanguageModel(dataset.tokenizer.vocab_size, config.block_size, config.embed_size)
+    model = BigramLanguageModel(dataset.tokenizer.vocab_size, config.block_size, config.embed_size, config.num_layers, config.num_heads, config.dropout)
     trainer = ModelTrainer(model, dataset, config)
     generator = TextGenerator(model, dataset.tokenizer)
 
