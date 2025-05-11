@@ -7,15 +7,15 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
-   block_size: int = 8
-   batch_size: int = 32
-   learning_rate: float = 1e-3
-   num_training_steps: int = 10000
+   block_size: int = 256
+   batch_size: int = 64
+   learning_rate: float = 3e-4
+   num_training_steps: int = 5000
    train_test_ratio: float = 0.9
-   eval_interval: int = 100
-   embed_size: int = 32
-   num_layers: int = 3
-   num_heads: int = 4
+   eval_interval: int = 500
+   embed_size: int = 384
+   num_layers: int = 6
+   num_heads: int = 6
    dropout: float = 0.2
 
 class BaseTokenizer(ABC):
