@@ -61,11 +61,51 @@ class Dataset:
       y = torch.stack([data[i+1:i+block_size+1] for i in random_indices])
       return x, y
    
+class FeedForward(nn.Module):
+   def __init__(self, embed_size):
+      super().__init__()
+      self.net = nn.Sequential(
+         nn.Linear(embed_size, embed_size),
+         nn.ReLU(),
+      )
+
+   def forward(self, x):
+      return self.net(x)
+
+class Head(nn.Module):
+   def __init__(self, head_size, embed_size, block_size):
+      super().__init__()
+      self.key = nn.Linear(embed_size, head_size, bias=False)
+      self.query = nn.Linear(embed_size, head_size, bias=False)
+      self.value = nn.Linear(embed_size, head_size, bias=False)
+      self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+   def forward(self, x):
+      B, T, C = x.shape
+      k = self.key(x)
+      q = self.query(x)
+      weights = q @ k.transpose(-2, -1) * (C ** -0.5)
+      weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+      weights = F.softmax(weights, dim=-1)
+      out = weights @ self.value(x)
+      return out
+
+class MultiHeadAttention(nn.Module):
+   def __init__(self, num_heads, head_size, embed_size, block_size):
+      super().__init__()
+      self.heads = nn.ModuleList([Head(head_size, embed_size, block_size) for _ in range(num_heads)])
+
+   def forward(self, x):
+      return torch.cat([head(x) for head in self.heads], dim=-1)
+
 class BigramLanguageModel(nn.Module):
    def __init__(self, vocab_size, block_size, embed_size):
       super().__init__()
+      self.block_size = block_size
       self.token_embedding_table = nn.Embedding(vocab_size, embed_size)
-      self.position_embedding_table == nn.Embedding(block_size, embed_size)
+      self.position_embedding_table = nn.Embedding(block_size, embed_size)
+      self.sa_head = MultiHeadAttention(num_heads=4, head_size=embed_size//4, embed_size=embed_size, block_size=block_size)
+      self.ffwd = FeedForward(embed_size)
       self.lm_head = nn.Linear(embed_size, vocab_size)
 
    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -73,6 +113,8 @@ class BigramLanguageModel(nn.Module):
       token_embeddings = self.token_embedding_table(idx)
       position_embeddings = self.position_embedding_table(torch.arange(T))
       x = token_embeddings + position_embeddings
+      x = self.sa_head(x)
+      x = self.ffwd(x)
       logits = self.lm_head(x)
       if targets is None:
          loss = None
@@ -85,7 +127,8 @@ class BigramLanguageModel(nn.Module):
 
    def generate(self, idx, max_new_tokens):
       for _ in range(max_new_tokens):
-         logits, loss = self(idx)
+         idx_cond = idx[:, -self.block_size:]
+         logits, loss = self(idx_cond)
          logits = logits[:, -1, :] # note: using all-but-last dimension
          probs = F.softmax(logits, dim=-1)
          idx_next = torch.multinomial(probs, num_samples=1)
