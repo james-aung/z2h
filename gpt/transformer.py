@@ -9,7 +9,7 @@ device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 @dataclass
-class ModelConfig:
+class TransformerConfig:
    block_size: int = 128
    batch_size: int = 32
    learning_rate: float = 3e-4
@@ -59,14 +59,13 @@ class Dataset:
       self.train = self.data[:int(train_test_ratio*len(self.data))]
       self.test = self.data[int(train_test_ratio*len(self.data)):]
 
-   
    def get_batch(self, split, block_size, batch_size):
       data = self.train if split == 'train' else self.test
       random_indices = torch.randint(len(data) - block_size, (batch_size,))
       x = torch.stack([data[i:i+block_size] for i in random_indices])
       y = torch.stack([data[i+1:i+block_size+1] for i in random_indices])
       return x, y
-   
+
 class FeedForward(nn.Module):
    def __init__(self, embed_size, dropout):
       super().__init__()
@@ -80,7 +79,7 @@ class FeedForward(nn.Module):
    def forward(self, x):
       return self.net(x)
 
-class Head(nn.Module):
+class AttentionHead(nn.Module):
    def __init__(self, head_size, embed_size, block_size):
       super().__init__()
       self.key = nn.Linear(embed_size, head_size, bias=False)
@@ -101,7 +100,7 @@ class Head(nn.Module):
 class MultiHeadAttention(nn.Module):
    def __init__(self, num_heads, head_size, embed_size, block_size):
       super().__init__()
-      self.heads = nn.ModuleList([Head(head_size, embed_size, block_size) for _ in range(num_heads)])
+      self.heads = nn.ModuleList([AttentionHead(head_size, embed_size, block_size) for _ in range(num_heads)])
       self.proj = nn.Linear(embed_size, embed_size)
 
    def forward(self, x):
@@ -109,29 +108,29 @@ class MultiHeadAttention(nn.Module):
       out = self.proj(out)
       return out
 
-class Block(nn.Module):
+class TransformerBlock(nn.Module):
    def __init__(self, embed_size, block_size, num_heads, dropout):
       super().__init__()
       head_size = embed_size // num_heads
-      self.sa = MultiHeadAttention(num_heads, head_size, embed_size, block_size)
+      self.attention = MultiHeadAttention(num_heads, head_size, embed_size, block_size)
       self.ffwd = FeedForward(embed_size, dropout)
       self.ln1 = nn.LayerNorm(embed_size)
       self.ln2 = nn.LayerNorm(embed_size)
       self.dropout = nn.Dropout(dropout)
 
    def forward(self, x):
-      x = x + self.dropout(self.sa(self.ln1(x)))
+      x = x + self.dropout(self.attention(self.ln1(x)))
       x = x + self.dropout(self.ffwd(self.ln2(x)))
       return x
 
-class BigramLanguageModel(nn.Module):
+class TransformerLM(nn.Module):
    def __init__(self, vocab_size, block_size, embed_size, num_layers, num_heads, dropout):
       super().__init__()
       self.block_size = block_size
       self.token_embedding_table = nn.Embedding(vocab_size, embed_size)
       self.position_embedding_table = nn.Embedding(block_size, embed_size)
       self.blocks = nn.Sequential(
-         *[Block(num_heads=num_heads, block_size=block_size, embed_size=embed_size, dropout=dropout) for _ in range(num_layers)],
+         *[TransformerBlock(num_heads=num_heads, block_size=block_size, embed_size=embed_size, dropout=dropout) for _ in range(num_layers)],
          nn.LayerNorm(embed_size),
       )
       self.dropout = nn.Dropout(dropout)
@@ -166,7 +165,7 @@ class BigramLanguageModel(nn.Module):
       return idx
 
 class ModelTrainer:
-   def __init__(self, model: nn.Module, dataset: Dataset, config: ModelConfig):
+   def __init__(self, model: nn.Module, dataset: Dataset, config: TransformerConfig):
       self.model = model
       self.dataset = dataset
       self.config = config
@@ -186,7 +185,6 @@ class ModelTrainer:
          loss = self.train_step()
          self.losses.append(loss)
          
-         # Evaluate and print losses every eval_interval steps
          if step % self.config.eval_interval == 0:
             losses = self.estimate_loss()
             print(f"step {step}: train loss {losses['train']:.4f}, test loss {losses['test']:.4f}")
@@ -205,9 +203,8 @@ class ModelTrainer:
       self.model.train()
       return out
 
-
 class TextGenerator:
-    def __init__(self, model: BigramLanguageModel, tokenizer: BaseTokenizer):
+    def __init__(self, model: TransformerLM, tokenizer: BaseTokenizer):
         self.model = model
         self.tokenizer = tokenizer
     
@@ -218,19 +215,17 @@ class TextGenerator:
         return self.tokenizer.decode(generated_tokens[0].tolist())
 
 def main():
-    config = ModelConfig()
+    config = TransformerConfig()
     dataset = Dataset('gpt/data/input.txt', config.train_test_ratio)
-    model = BigramLanguageModel(dataset.tokenizer.vocab_size, config.block_size, config.embed_size, config.num_layers, config.num_heads, config.dropout)
+    model = TransformerLM(dataset.tokenizer.vocab_size, config.block_size, config.embed_size, config.num_layers, config.num_heads, config.dropout)
     model = model.to(device)
     trainer = ModelTrainer(model, dataset, config)
     generator = TextGenerator(model, dataset.tokenizer)
 
-    print("\nInitial generation:")
-    print(generator.generate(prompt="\n", max_new_tokens=1000))
-    
+    print("\nTraining model...")
     trainer.train()
     
-    print("\nFinal generation:")
+    print("\nGenerating text:")
     print(generator.generate(prompt="\n", max_new_tokens=1000))
 
 if __name__ == "__main__":
