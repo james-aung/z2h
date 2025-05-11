@@ -5,17 +5,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
 
+device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+print(f"Using device: {device}")
+
 @dataclass
 class ModelConfig:
-   block_size: int = 256
-   batch_size: int = 64
+   block_size: int = 128
+   batch_size: int = 32
    learning_rate: float = 3e-4
    num_training_steps: int = 5000
    train_test_ratio: float = 0.9
    eval_interval: int = 500
-   embed_size: int = 384
-   num_layers: int = 6
-   num_heads: int = 6
+   embed_size: int = 128
+   num_layers: int = 4
+   num_heads: int = 4
    dropout: float = 0.2
 
 class BaseTokenizer(ABC):
@@ -52,7 +55,7 @@ class Dataset:
    def __init__(self, path, train_test_ratio=0.9):
       text = open(path, 'r', encoding='utf-8').read()
       self.tokenizer = CharacterTokenizer(text)
-      self.data = torch.tensor(self.tokenizer.encode(text), dtype=torch.long)
+      self.data = torch.tensor(self.tokenizer.encode(text), dtype=torch.long).to(device)
       self.train = self.data[:int(train_test_ratio*len(self.data))]
       self.test = self.data[int(train_test_ratio*len(self.data)):]
 
@@ -137,9 +140,9 @@ class BigramLanguageModel(nn.Module):
    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
       B, T = idx.shape
       token_embeddings = self.token_embedding_table(idx)
-      position_embeddings = self.position_embedding_table(torch.arange(T))
+      position_embeddings = self.position_embedding_table(torch.arange(T, device=idx.device))
       x = token_embeddings + position_embeddings
-      x = self.dropout(x)  # Add dropout after embeddings
+      x = self.dropout(x)
       for block in self.blocks:
          x = block(x)
       logits = self.lm_head(x)
@@ -156,7 +159,7 @@ class BigramLanguageModel(nn.Module):
       for _ in range(max_new_tokens):
          idx_cond = idx[:, -self.block_size:]
          logits, loss = self(idx_cond)
-         logits = logits[:, -1, :] # note: using all-but-last dimension
+         logits = logits[:, -1, :]
          probs = F.softmax(logits, dim=-1)
          idx_next = torch.multinomial(probs, num_samples=1)
          idx = torch.cat((idx, idx_next), dim=-1)
@@ -209,7 +212,7 @@ class TextGenerator:
         self.tokenizer = tokenizer
     
     def generate(self, prompt: str = '\n', max_new_tokens: int = 1000) -> str:
-        starting_tokens = torch.tensor(self.tokenizer.encode(prompt), dtype=torch.long)
+        starting_tokens = torch.tensor(self.tokenizer.encode(prompt), dtype=torch.long).to(device)
         starting_tokens = starting_tokens.unsqueeze(0)
         generated_tokens = self.model.generate(starting_tokens, max_new_tokens)
         return self.tokenizer.decode(generated_tokens[0].tolist())
@@ -218,6 +221,7 @@ def main():
     config = ModelConfig()
     dataset = Dataset('gpt/data/input.txt', config.train_test_ratio)
     model = BigramLanguageModel(dataset.tokenizer.vocab_size, config.block_size, config.embed_size, config.num_layers, config.num_heads, config.dropout)
+    model = model.to(device)
     trainer = ModelTrainer(model, dataset, config)
     generator = TextGenerator(model, dataset.tokenizer)
 
